@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: titickets_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: titickets
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d titickets"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: titickets_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    container_name: titickets_meilisearch
+    restart: unless-stopped
+    environment:
+      - MEILI_MASTER_KEY=titickets_master_key_123
+      - MEILI_ENV=development
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili_data:/meili_data
+
+  # ==========================================
+  # 2. APLICAÇÕES (Monorepo Turborepo)
+  # ==========================================
+  backend-core:
+    build:
+      context: .
+      dockerfile: apps/backend-core/Dockerfile
+    container_name: titickets_backend_core
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - APP_NAME=backend-core
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/titickets
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  search-sync:
+    build:
+      context: .
+      dockerfile: apps/search-sync/Dockerfile
+    container_name: titickets_search_sync
+    restart: unless-stopped
+    environment:
+      - APP_NAME=search-sync
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MEILI_HOST=http://meilisearch:7700
+      - MEILI_MASTER_KEY=titickets_master_key_123
+    depends_on:
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: titickets_web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - NEXT_PUBLIC_MEILI_HOST=http://localhost:7700
+      - NEXT_PUBLIC_MEILI_KEY=titickets_master_key_123
+    depends_on:
+      - backend-core
+      - search-sync
+
+volumes:
+  postgres_data:
+  redis_data:
+  meili_data:
